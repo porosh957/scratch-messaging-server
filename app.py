@@ -1,4 +1,5 @@
 import os
+import hmac
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import psycopg
@@ -50,7 +51,8 @@ def home():
             "/api/users",
             "/api/users/register",
             "/api/users/<id>",
-            "/api/users/lookup?username=<username>"
+            "/api/users/lookup?username=<username>",
+            "DELETE /api/users/<id> (requires X-Admin-Token)"
         ]
     })
 
@@ -234,6 +236,44 @@ def get_user_by_id(user_id):
         if row is None:
             return jsonify({"error": "User ID not found."}), 404
         return jsonify({"id": row["id"], "username": row["username"]})
+    except (psycopg.Error, RuntimeError) as exc:
+        return database_error_response(exc)
+
+
+@app.delete("/api/users/<int:user_id>")
+def delete_user(user_id):
+    """
+    Permanently delete a registry user.
+    Configure DELETE_TOKEN in the server environment and send it in
+    the X-Admin-Token header. This route is intentionally protected.
+    """
+    configured_token = os.environ.get("DELETE_TOKEN", "")
+    supplied_token = request.headers.get("X-Admin-Token", "")
+
+    if not configured_token:
+        return jsonify({
+            "error": "Deletion is disabled until DELETE_TOKEN is configured on the server."
+        }), 503
+
+    if not supplied_token or not hmac.compare_digest(supplied_token, configured_token):
+        return jsonify({"error": "Unauthorized."}), 401
+
+    try:
+        ensure_user_table()
+        with get_db_connection() as conn:
+            row = conn.execute(
+                "DELETE FROM users WHERE id = %s RETURNING id, username",
+                (user_id,)
+            ).fetchone()
+
+        if row is None:
+            return jsonify({"error": "User ID not found."}), 404
+
+        return jsonify({
+            "deleted": True,
+            "id": row["id"],
+            "username": row["username"]
+        })
     except (psycopg.Error, RuntimeError) as exc:
         return database_error_response(exc)
 
